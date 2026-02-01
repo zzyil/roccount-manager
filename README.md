@@ -32,10 +32,13 @@ You need Python 3 installed on your system.
 3.  **To Add Accounts**:
     *   **Log in manually** to Roblox in your browser or the Roblox app.
     *   Open Roccount Manager and click **"Load Existing"**.
-    *   Give it a nickname. This safely captures your current session file.
+    *   The app will automatically fetch your **Roblox Username** and capture your session.
 4.  **To Switch**:
     *   Select an account and click **"Switch and Launch"** to open Roblox as that user.
     *   Or click **"Load into Roblox"** to inject the session without launching the game immediately.
+5.  **Manage Data**:
+    *   **Stats**: View the "Expires" date for each account in the details panel.
+    *   **Import/Export**: Use the buttons to backup your accounts to a decrypted JSON file (Securely!).
 
 ### Safe Guards
 The app includes safeguards to preventing "cookie corruption":
