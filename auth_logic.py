@@ -23,6 +23,8 @@ class Account:
     name: str
     token: str
     binary_data: Optional[bytes] = None
+    created_at: Optional[float] = None
+    expires_at: Optional[float] = None
 
 
 def get_app_dir() -> Path:
@@ -115,7 +117,14 @@ def load_accounts() -> Tuple[List[Account], Optional[str]]:
         if "binary_data" in entry and entry["binary_data"]:
             binary_data = decrypt_bytes(entry["binary_data"])
             
-        accounts.append(Account(id=entry["id"], name=entry["name"], token=token, binary_data=binary_data))
+        accounts.append(Account(
+            id=entry["id"], 
+            name=entry["name"], 
+            token=token, 
+            binary_data=binary_data,
+            created_at=entry.get("created_at"),
+            expires_at=entry.get("expires_at")
+        ))
     return accounts, data.get("last_selected_id")
 
 
@@ -129,6 +138,10 @@ def save_accounts(accounts: List[Account], last_selected_id: Optional[str] = Non
         }
         if acc.binary_data:
             entry["binary_data"] = encrypt_bytes(acc.binary_data)
+        if acc.created_at:
+            entry["created_at"] = acc.created_at
+        if acc.expires_at:
+            entry["expires_at"] = acc.expires_at
         account_list.append(entry)
         
     payload = {
@@ -139,17 +152,109 @@ def save_accounts(accounts: List[Account], last_selected_id: Optional[str] = Non
     _save_raw(payload)
 
 
+def extract_cookie_metadata(binary_data: bytes) -> dict:
+    try:
+        cookies = _parse_binarycookies(binary_data)
+        for cookie in cookies:
+            if cookie.get("name") == ".ROBLOSECURITY" and cookie.get("domain", "").endswith("roblox.com"):
+                # Core Foundation time to Unix timestamp
+                # Epoch difference (2001-01-01 - 1970-01-01) is 978307200 seconds
+                cf_creation = cookie.get("creation", 0)
+                cf_expires = cookie.get("expires", 0)
+                
+                cf_creation = cookie.get("creation", 0)
+                cf_expires = cookie.get("expires", 0)
+                
+                # Check for valid timestamps (avoid 0.0)
+                created_at = (cf_creation + 978307200) if cf_creation > 0 else None
+                expires_at = (cf_expires + 978307200) if cf_expires > 0 else None
+                
+                return {
+                    "created_at": created_at,
+                    "expires_at": expires_at
+                }
+    except Exception:
+        pass
+    return {}
+
+
 def add_account(name: str, token: str, binary_data: Optional[bytes] = None) -> Account:
     accounts, last_selected_id = load_accounts()
+    
+    metadata = {}
+    if binary_data:
+        metadata = extract_cookie_metadata(binary_data)
+        
     new_account = Account(
         id=str(uuid.uuid4()), 
         name=name, 
         token=token.strip(),
-        binary_data=binary_data
+        binary_data=binary_data,
+        created_at=metadata.get("created_at"),
+        expires_at=metadata.get("expires_at")
     )
     accounts.append(new_account)
     save_accounts(accounts, last_selected_id)
     return new_account
+
+
+def export_accounts_to_json(path: Path) -> None:
+    accounts, _ = load_accounts()
+    export_data = []
+    for acc in accounts:
+        item = {
+            "name": acc.name,
+            "token": acc.token,
+            "created_at": acc.created_at,
+            "expires_at": acc.expires_at
+        }
+        if acc.binary_data:
+            item["binary_data_b64"] = base64.b64encode(acc.binary_data).decode("utf-8")
+        export_data.append(item)
+    
+    path.write_text(json.dumps(export_data, indent=2), encoding="utf-8")
+
+
+def get_roblox_username(token: str) -> Optional[str]:
+    import urllib.request
+    try:
+        url = "https://users.roblox.com/v1/users/authenticated"
+        req = urllib.request.Request(url)
+        req.add_header("Cookie", f".ROBLOSECURITY={token}")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.load(response)
+            return data.get("name")
+    except Exception:
+        return None
+
+
+def import_accounts_from_json(path: Path) -> int:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return 0
+            
+        count = 0
+        for item in data:
+            if not item.get("token"):
+                continue
+                
+            name = item.get("name", "Imported Account")
+            token = item.get("token")
+            binary_data = None
+            if item.get("binary_data_b64"):
+                try:
+                    binary_data = base64.b64decode(item["binary_data_b64"])
+                except Exception:
+                    pass
+            
+            # Use add_account to handle ID generation, encryption logic, etc.
+            # We pass binary_data directly, stats will be re-extracted
+            add_account(name, token, binary_data)
+            count += 1
+        return count
+    except Exception:
+        return 0
 
 
 def rename_account(account_id: str, new_name: str) -> None:
@@ -345,8 +450,8 @@ def _parse_binarycookies(data: bytes) -> List[dict]:
             name_off = struct.unpack_from("<I", chunk, 20)[0]
             path_off = struct.unpack_from("<I", chunk, 24)[0]
             value_off = struct.unpack_from("<I", chunk, 28)[0]
-            expires = struct.unpack_from("<d", chunk, 32)[0]
-            creation = struct.unpack_from("<d", chunk, 40)[0]
+            creation = struct.unpack_from("<d", chunk, 32)[0]
+            expires = struct.unpack_from("<d", chunk, 40)[0]
             flags = struct.unpack_from("<I", chunk, 8)[0]
             cookies.append(
                 {
@@ -428,8 +533,8 @@ def _build_cookie(domain: str, name: str, path: str, value: str, expires: float,
         name_off,       # 20-24: name offset
         path_off,       # 24-28: path offset
         value_off,      # 28-32: value offset
-        expires,        # 32-40: expiration date
-        creation,       # 40-48: creation date
+        creation,       # 32-40: creation date
+        expires,        # 40-48: expiration date
     )
     padding = b"\x00" * 8  # 48-56: padding
     return header + padding + body

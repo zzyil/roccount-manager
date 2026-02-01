@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import customtkinter as ctk
 
@@ -7,8 +7,11 @@ from auth_logic import (
     add_account,
     clear_cookie,
     delete_account,
+    export_accounts_to_json,
     get_existing_cookie,
     get_full_cookie_file_content,
+    get_roblox_username,
+    import_accounts_from_json,
     kill_roblox_processes,
     list_running_roblox_processes,
     load_account_cookie,
@@ -25,8 +28,8 @@ class RobloxAccountManagerApp(ctk.CTk):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
         self.title("Roblox Account Manager")
-        self.geometry("720x480")
-        self.minsize(680, 420)
+        self.geometry("720x600")
+        self.minsize(680, 500)
         self.accounts = []
         self.last_selected_id = None
         self.selected_id = None
@@ -57,6 +60,15 @@ class RobloxAccountManagerApp(ctk.CTk):
         self.listbox = tk.Listbox(list_frame, activestyle="none", height=8)
         self.listbox.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self.listbox.bind("<<ListboxSelect>>", self.on_select)
+
+        # Stats / Details Panel
+        self.details_frame = ctk.CTkFrame(list_frame)
+        self.details_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self.details_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(self.details_frame, text="Expires:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        self.lbl_expires = ctk.CTkLabel(self.details_frame, text="-", anchor="w")
+        self.lbl_expires.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
 
         controls = ctk.CTkFrame(body)
         controls.grid(row=0, column=1, sticky="nsew", padx=(8, 12), pady=12)
@@ -91,8 +103,20 @@ class RobloxAccountManagerApp(ctk.CTk):
         )
         self.clear_cookie_button.grid(row=7, column=0, sticky="ew", padx=12, pady=8)
 
+        # Data Management
+        data_frame = ctk.CTkFrame(controls, fg_color="transparent")
+        data_frame.grid(row=8, column=0, sticky="ew", padx=12, pady=4)
+        data_frame.grid_columnconfigure(0, weight=1)
+        data_frame.grid_columnconfigure(1, weight=1)
+        
+        self.btn_export = ctk.CTkButton(data_frame, text="Export", command=self.export_data)
+        self.btn_export.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        
+        self.btn_import = ctk.CTkButton(data_frame, text="Import", command=self.import_data)
+        self.btn_import.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
         self.status_label = ctk.CTkLabel(controls, text="", justify="left")
-        self.status_label.grid(row=8, column=0, sticky="ew", padx=12, pady=(16, 12))
+        self.status_label.grid(row=9, column=0, sticky="ew", padx=12, pady=(16, 12))
 
         self.refresh_accounts()
 
@@ -116,8 +140,45 @@ class RobloxAccountManagerApp(ctk.CTk):
         idx = selection[0]
         self.selected_id = self.accounts[idx].id
         set_last_selected_id(self.selected_id)
+        
+        # Update details
+        acc = self.accounts[idx]
+        
+        if acc.expires_at:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(acc.expires_at)
+            self.lbl_expires.configure(text=dt.strftime("%Y-%m-%d %H:%M"))
+            
+            # Check for expiry
+            if acc.expires_at < datetime.now().timestamp():
+                self.lbl_expires.configure(text_color="red")
+            else:
+                self.lbl_expires.configure(text_color=["black", "white"])
+        else:
+            self.lbl_expires.configure(text="Unknown")
+            self.lbl_expires.configure(text_color=["black", "white"])
 
-    def open_add_popup(self) -> None:
+
+
+    def load_existing_account(self) -> None:
+        result = get_full_cookie_file_content()
+        if result.get("status") != "ok":
+            messagebox.showerror("Load Existing", f"Could not find an existing cookie: {result}")
+            return
+        
+        token = result.get("token", "")
+        binary_data = result.get("data")
+        
+        # Auto-fetch username if token exists
+        default_name = ""
+        if token:
+            fetched_name = get_roblox_username(token)
+            if fetched_name:
+                default_name = fetched_name
+        
+        self.open_add_popup(prefill_name=default_name, prefill_token=token, prefill_binary=binary_data)
+        
+    def open_add_popup(self, prefill_name: str = "", prefill_token: str = "", prefill_binary: bytes = None) -> None:
         popup = ctk.CTkToplevel(self)
         popup.title("Add Account")
         popup.geometry("520x360")
@@ -128,12 +189,14 @@ class RobloxAccountManagerApp(ctk.CTk):
         name_label = ctk.CTkLabel(popup, text="Nickname")
         name_label.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
         name_entry = ctk.CTkEntry(popup, placeholder_text="Main")
+        name_entry.insert(0, prefill_name)
         name_entry.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
 
         token_label = ctk.CTkLabel(popup, text=".ROBLOSECURITY Cookie")
         token_label.grid(row=2, column=0, sticky="nw", padx=16, pady=(0, 4))
 
         token_box = ctk.CTkTextbox(popup, height=140)
+        token_box.insert("1.0", prefill_token)
         token_box.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 12))
 
         button_frame = ctk.CTkFrame(popup)
@@ -148,8 +211,10 @@ class RobloxAccountManagerApp(ctk.CTk):
                 messagebox.showerror("Missing Cookie", "Please paste a .ROBLOSECURITY cookie value.")
                 return
             if not name:
-                name = f"Account {len(self.accounts) + 1}"
-            add_account(name, token)
+                # Fallback to auto-fetch if user cleared it but token is there? Or just create default
+                name = get_roblox_username(token) or f"Account {len(self.accounts) + 1}"
+                
+            add_account(name, token, prefill_binary) # Pass binary data if available
             popup.destroy()
             self.refresh_accounts()
 
@@ -157,23 +222,6 @@ class RobloxAccountManagerApp(ctk.CTk):
         save_button.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=10)
         cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=popup.destroy)
         cancel_button.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=10)
-
-    def load_existing_account(self) -> None:
-        result = get_full_cookie_file_content()
-        if result.get("status") != "ok":
-            messagebox.showerror("Load Existing", f"Could not find an existing cookie: {result}")
-            return
-        
-        token = result.get("token", "")
-        binary_data = result.get("data")
-        
-        dialog = ctk.CTkInputDialog(text="Nickname for existing account:", title="Load Existing")
-        name = dialog.get_input()
-        if not name:
-            return
-            
-        add_account(name.strip(), token, binary_data)
-        self.refresh_accounts()
 
     def rename_selected(self) -> None:
         if not self.selected_id:
@@ -282,6 +330,53 @@ class RobloxAccountManagerApp(ctk.CTk):
         else:
             messagebox.showerror("Clear Error", f"Failed to clear cookie: {result}")
         self.status_label.configure(text="")
+
+
+    def export_data(self) -> None:
+        if not self.accounts:
+            messagebox.showinfo("Export", "No accounts to export.")
+            return
+            
+        proceed = messagebox.askyesno(
+            "SECURITY WARNING",
+            "This will export all your accounts including SENSITIVE COOKIES to a plain JSON file.\n\n"
+            "ANYONE with this file can access your Roblox accounts!\n\n"
+            "Do NOT share this file. Do you want to proceed?"
+        )
+        if not proceed:
+            return
+            
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json")],
+            title="Export Accounts (SENSITIVE)"
+        )
+        if not path:
+            return
+            
+        try:
+            from pathlib import Path
+            export_accounts_to_json(Path(path))
+            messagebox.showinfo("Export Successful", f"Successfully exported {len(self.accounts)} accounts.")
+        except Exception as e:
+            messagebox.showerror("Export Failed", str(e))
+
+
+    def import_data(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON Files", "*.json")],
+            title="Import Accounts"
+        )
+        if not path:
+            return
+        
+        try:
+            from pathlib import Path
+            count = import_accounts_from_json(Path(path))
+            messagebox.showinfo("Import Successful", f"Successfully imported {count} accounts.")
+            self.refresh_accounts()
+        except Exception as e:
+            messagebox.showerror("Import Failed", str(e))
 
 
 def run() -> None:
